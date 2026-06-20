@@ -32,6 +32,6 @@ type SRTPHeader struct {
 }
 
 type SRTPPPacket struct {
-	header  SRTPHeader
-	payload []byte
+	Header  SRTPHeader
+	Payload []byte
 }
