@@ -5,6 +5,7 @@ PORT ?= 6000
 HOST ?= 192.168.0.6
 FILE ?= teste.txt
 MODE ?= saw
+VERBOSE ?= true
 MAIN_PATH = cmd/SRTP/main.go
 
 # ==========================================
@@ -13,11 +14,11 @@ MAIN_PATH = cmd/SRTP/main.go
 
 # Roda o Receiver (Servidor)
 server:
-	go run $(MAIN_PATH) --listen --port $(PORT) --mode $(MODE)
+	go run $(MAIN_PATH) --listen --port $(PORT) --mode $(MODE) --verbose=$(VERBOSE)
 
 # Roda o Sender (Cliente)
 client:
-	go run $(MAIN_PATH) --host $(HOST) --port $(PORT) --file $(FILE) --mode $(MODE)
+	go run $(MAIN_PATH) --host $(HOST) --port $(PORT) --file $(FILE) --mode $(MODE) --verbose=$(VERBOSE)
 
 # Gera o executável final (Para quando o projeto estiver pronto)
 build:

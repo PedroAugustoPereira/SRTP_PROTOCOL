@@ -2,10 +2,16 @@ package network
 
 import (
 	"SRTP/internal/protocol"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
+	"strings"
+	"time"
 )
+
+var ErrFlushChannel = errors.New("FLUSH_CHANNEL")
 
 func (r *Receiver) Listen(port int) error {
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
@@ -35,13 +41,17 @@ func (r *Receiver) Listen(port int) error {
 		length, remoteAddr, err := r.Conn.ReadFromUDP(buffer)
 
 		if err != nil {
+			if r.Stopped {
+				fmt.Println("\n[SERVER] Receiver parado pelo usuário.")
+				return nil
+			}
 			continue
 		}
 
-		fmt.Printf("Recebemos mensagem de %v\n", remoteAddr.IP)
+		Logf("Recebemos mensagem de %v\n", remoteAddr.IP)
 
 		if !protocol.ValidateCRC((buffer[:length])) {
-			fmt.Printf("Pacote descartado de %v\n", remoteAddr.IP)
+			Logf("Pacote descartado de %v\n", remoteAddr.IP)
 			continue
 		}
 
@@ -70,7 +80,7 @@ func (r *Receiver) Listen(port int) error {
 			select {
 			case worker.PacketCh <- receivedPacket:
 			default:
-				fmt.Println("Aviso: Canal do worker cheio, pacote dropado")
+				Logln("Aviso: Canal do worker cheio, pacote dropado")
 			}
 		}
 	}
@@ -91,12 +101,11 @@ func (r *Receiver) createNewWorker(addr *net.UDPAddr, syncPacket *protocol.SRTPP
 	// 2. Decidimos qual "cérebro" usar com base na string do modo
 	switch r.Mode {
 	case "saw":
-		controller = &StopAndWaitController{} // Aqui acontece a "Tipagem Patinho" que conversamos!
-	// Futuramente na Parte 2 você vai adicionar:
-	// case "gbn":
-	// 	controller = &GoBackNController{}
-	// case "sr":
-	// 	controller = &SelectiveRepeatController{}
+		controller = &StopAndWaitController{}
+	case "gbn":
+		controller = &GoBackNController{}
+	case "sr":
+		controller = &SelectiveRepeatController{}
 	default:
 		// Se o usuário digitar um modo inválido, o padrão de fallback é o SAW
 		fmt.Println("[Aviso] Modo desconhecido. Usando 'saw' como padrão.")
@@ -153,6 +162,7 @@ func (w *ClientWorker) processLoop() {
 
 				clientFolder := fmt.Sprintf("recebidos/%s_%d", w.Session.RemoteAddr.IP.String(), w.Session.RemoteAddr.Port)
 				os.MkdirAll(clientFolder, 0755)
+				w.Session.ClientFolder = clientFolder
 
 				fmt.Println("Handshake finalizado com " + w.Session.RemoteAddr.String())
 			}
@@ -168,15 +178,122 @@ func (w *ClientWorker) processLoop() {
 				}
 				finAckBuffer, _ := protocol.EncodeSRTP(&finAckPacket)
 				w.Session.Conn.WriteToUDP(finAckBuffer, w.Session.RemoteAddr)
-				break
+				return
 			}
 
 			err := w.Session.Controller.HandlePacket(receivedPacket, w.Session)
 
-			if err != nil {
+			if err == ErrFlushChannel {
+				fmt.Println("[SERVER] NACK enviado, esvaziando canal de pacotes...")
+				// Drena todos os pacotes pendentes no canal sem matar a goroutine
+				draining := true
+				for draining {
+					select {
+					case <-w.PacketCh:
+					default:
+						draining = false
+					}
+				}
+			} else if err != nil {
 				fmt.Println("Erro ao processar pacote pelo controlador de fluxo:", err)
 			}
 		}
 
 	}
+}
+
+func WritePayloadToFile(session *SRTSession, payload []byte, isLastPacket bool, modeName string) error {
+	if session.CurrentFile == nil {
+		// Usa data e hora legível. Inicialmente salva como .tmp para depois renomear
+		timestamp := time.Now().Format("2006-01-02_15h04m05s")
+		fileName := fmt.Sprintf("%s/file_%s.tmp", session.ClientFolder, timestamp)
+		file, err := os.Create(fileName)
+		if err != nil {
+			return fmt.Errorf("erro ao criar arquivo: %v", err)
+		}
+		session.CurrentFile = file
+		fmt.Printf("[%s-RECEIVER] Iniciando transferência: %s\n", modeName, fileName)
+	}
+
+	if len(payload) > 0 {
+		_, err := session.CurrentFile.Write(payload)
+		if err != nil {
+			return fmt.Errorf("erro escrevendo no disco: %v", err)
+		}
+	}
+
+	if isLastPacket {
+		fmt.Printf("[%s-RECEIVER] Fim do stream detectado! Fechando arquivo.\n", modeName)
+		tmpFileName := session.CurrentFile.Name()
+		session.CurrentFile.Close()
+		session.CurrentFile = nil
+
+		// Detectar a extensão lendo os primeiros bytes do arquivo salvo
+		extension := ".bin" // default
+		f, err := os.Open(tmpFileName)
+		if err == nil {
+			buffer := make([]byte, 512)
+			n, _ := f.Read(buffer)
+			f.Close()
+
+			if n > 0 {
+				mimeType := http.DetectContentType(buffer[:n])
+
+				// Exemplo: mimeType = "application/pdf" ou "text/plain; charset=utf-8"
+				parts := strings.SplitN(mimeType, "/", 2)
+
+				if len(parts) == 2 {
+					mimeTypePart := parts[1]
+
+					// Remove possíveis parâmetros extras (ex: "; charset=utf-8")
+					mimeTypePart = strings.SplitN(mimeTypePart, ";", 2)[0]
+					mimeTypePart = strings.TrimSpace(mimeTypePart)
+
+					// Tratamento de exceções (quando o nome MIME não é igual a extensão)
+					if mimeTypePart == "plain" {
+						extension = ".txt"
+					} else if mimeTypePart == "octet-stream" {
+						extension = ".bin" // binário genérico
+					} else {
+						extension = "." + mimeTypePart // Ex: ".pdf", ".png", ".jpeg", ".zip"
+					}
+				}
+			}
+		}
+
+		// Renomear o arquivo com a extensão correta
+		finalFileName := tmpFileName[:len(tmpFileName)-4] + extension
+		err = os.Rename(tmpFileName, finalFileName)
+		if err != nil {
+			fmt.Printf("[%s-RECEIVER] Erro ao renomear arquivo para %s: %v\n", modeName, extension, err)
+		} else {
+			fmt.Printf("[%s-RECEIVER] Arquivo salvo e tipado com sucesso: %s\n", modeName, finalFileName)
+		}
+	}
+
+	return nil
+}
+
+func SendControlPacket(session *SRTSession, ackNum uint16, isNack bool) error {
+	localAddr := session.Conn.LocalAddr().(*net.UDPAddr)
+	senderControlAddr := &net.UDPAddr{
+		IP:   session.RemoteAddr.IP,
+		Port: localAddr.Port + 1,
+	}
+
+	ctrlPacket := protocol.SRTPPPacket{
+		Header: protocol.SRTPHeader{
+			ACKFlag: true,
+			NACK:    isNack,
+			ACK:     ackNum,
+		},
+	}
+
+	buffer, err := protocol.EncodeSRTP(&ctrlPacket)
+	if err != nil {
+		return fmt.Errorf("erro ao codificar pacote de controle: %v", err)
+	}
+
+	_, err = session.Conn.WriteToUDP(buffer, senderControlAddr)
+	return err
 }

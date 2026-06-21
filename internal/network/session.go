@@ -25,13 +25,17 @@ type SRTSession struct {
 	ExpectedSeq uint16
 	WindowSize  uint8
 
-	Controller  FlowController
-	CurrentFile *os.File
+	Controller   FlowController
+	CurrentFile  *os.File
+	ClientFolder string
+
+	// Buffer de recepção para Selective Repeat (pacotes fora de ordem)
+	SRRecvBuffer map[uint16]*protocol.SRTPPPacket
 }
 
 type Sender struct {
-	Session *SRTSession
 	File    string
+	Session *SRTSession
 }
 
 type ClientWorker struct {
@@ -47,4 +51,5 @@ type Receiver struct {
 	Sessions map[string]*ClientWorker
 	mu       sync.RWMutex
 	Mode     string
+	Stopped  bool
 }

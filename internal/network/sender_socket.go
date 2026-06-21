@@ -23,7 +23,7 @@ func (s *Sender) executeHandShake() error {
 	packetSyn := protocol.SRTPPPacket{
 		Header: protocol.SRTPHeader{
 			SYN:    true,
-			Length: 16,
+			Length: s.Session.WindowSize,
 		},
 	}
 
@@ -33,42 +33,67 @@ func (s *Sender) executeHandShake() error {
 		return fmt.Errorf("Erro ao inciar HandShake: %v", err)
 	}
 
-	//Enviamos o Syn do HandShake
-	s.Session.Conn.Write(bufferSyn)
-	s.Session.State = StateSynSent
-
 	buffer := make([]byte, 9)
-	length, _, err := s.Session.Conn.ReadFromUDP(buffer)
-	if err != nil {
-		return fmt.Errorf("erro ao ler resposta: %v", err)
-	}
+	handshakeComplete := false
 
-	if !protocol.ValidateCRC(buffer[:length]) {
-		return fmt.Errorf("pacote corrompido (CRC32 inválido), descartando")
-	}
+	for !handshakeComplete {
+		//Enviamos o Syn do HandShake
+		s.Session.Conn.Write(bufferSyn)
+		s.Session.State = StateSynSent
 
-	responsePacket, err := protocol.DecodeSRTP(buffer[:length])
-	if err != nil {
-		return fmt.Errorf("erro ao decodar pacote: %v", err)
-	}
+		s.Session.Conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		length, _, err := s.Session.Conn.ReadFromUDP(buffer)
 
-	// Verificar se a resposata é SYN
-	if responsePacket.Header.SYN && responsePacket.Header.ACKFlag {
-		// Agora precisamos mandar o ACK final para estabelecer a Conexão
-		ACKPacket := protocol.SRTPPPacket{
-			Header: protocol.SRTPHeader{
-				ACKFlag: true,
-			},
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Println("[SENDER] Timeout esperando SYN+ACK... Retransmitindo SYN.")
+				continue
+			}
+			return fmt.Errorf("erro ao ler resposta: %v", err)
 		}
 
-		ACKBuffer, _ := protocol.EncodeSRTP(&ACKPacket)
-		s.Session.Conn.Write(ACKBuffer)
-		s.Session.State = StateEstablished
-		fmt.Println("Handshake concluído com sucesso! Estado: Established")
-		return nil
+		if !protocol.ValidateCRC(buffer[:length]) {
+			fmt.Println("[SENDER] SYN+ACK corrompido, retransmitindo SYN...")
+			continue
+		}
+
+		responsePacket, err := protocol.DecodeSRTP(buffer[:length])
+		if err != nil {
+			return fmt.Errorf("erro ao decodar pacote: %v", err)
+		}
+
+		// Verificar se a resposata é SYN+ACK
+		if responsePacket.Header.SYN && responsePacket.Header.ACKFlag {
+			// Negociação de janela: min(sender, receiver) conforme enunciado
+			receiverWindow := responsePacket.Header.Length
+			senderWindow := packetSyn.Header.Length
+			if receiverWindow < senderWindow {
+				s.Session.WindowSize = receiverWindow
+			} else {
+				s.Session.WindowSize = senderWindow
+			}
+			fmt.Printf("[SENDER] Janela negociada com o servidor: %d pacotes\n", s.Session.WindowSize)
+
+			// Agora precisamos mandar o ACK final para estabelecer a Conexão
+			ACKPacket := protocol.SRTPPPacket{
+				Header: protocol.SRTPHeader{
+					ACKFlag: true,
+				},
+			}
+
+			ACKBuffer, _ := protocol.EncodeSRTP(&ACKPacket)
+			s.Session.Conn.Write(ACKBuffer)
+
+			// Limpa o deadline para a fase de transferência
+			s.Session.Conn.SetReadDeadline(time.Time{})
+
+			s.Session.State = StateEstablished
+			fmt.Println("Handshake concluído com sucesso! Estado: Established")
+			handshakeComplete = true
+		}
 	}
 
-	return fmt.Errorf("handshake falhou: resposta inesperada do servidor")
+	return nil
 }
 
 func (s *Sender) SendFile(filePath string) error {
@@ -135,4 +160,41 @@ func (s *Sender) Close() error {
 	s.Session.Conn.Close()
 	fmt.Println("[SENDER] Conexão totalmente fechada. Sessão destruída.")
 	return nil
+}
+
+// SetupACKListener abre a porta P+1 para o Sender escutar as respostas do Receiver
+func SetupACKListener(session *SRTSession) (*net.UDPConn, uint16, error) {
+	ackPort := session.RemoteAddr.Port + 1
+	ackAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", ackPort))
+	if err != nil {
+		return nil, uint16(ackPort), fmt.Errorf("erro ao resolver porta ACK: %v", err)
+	}
+
+	ackConn, err := net.ListenUDP("udp", ackAddr)
+	if err != nil {
+		return nil, uint16(ackPort), fmt.Errorf("erro ao escutar na porta P+1 (%d): %v", ackPort, err)
+	}
+
+	return ackConn, uint16(ackPort), nil
+}
+
+func ReadNextPacket(session *SRTSession, seqNum uint16) (*protocol.SRTPPPacket, bool, error) {
+	payloadBuffer := make([]byte, 255)
+	bytesRead, err := session.CurrentFile.Read(payloadBuffer)
+
+	if err != nil && err.Error() != "EOF" {
+		return nil, false, fmt.Errorf("erro lendo arquivo do disco: %v", err)
+	}
+
+	packet := &protocol.SRTPPPacket{
+		Header: protocol.SRTPHeader{
+			SEQ:    seqNum,
+			Length: uint8(bytesRead),
+		},
+		Payload: payloadBuffer[:bytesRead],
+	}
+
+	isEOF := bytesRead < 255
+
+	return packet, isEOF, nil
 }
