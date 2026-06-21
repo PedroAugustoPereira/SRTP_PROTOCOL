@@ -48,10 +48,9 @@ func (c *StopAndWaitController) TransmitFile(session *SRTSession) error {
 			return err
 		}
 
-		if filePacket.Header.Length == 0 && isEOF {
-			break
-		}
-
+		// Mesmo com payload vazio (arquivo múltiplo exato de 255 bytes), enviamos
+		// o pacote Length=0 como terminador de stream. O receiver precisa dele
+		// para finalizar e renomear o arquivo (enunciado: edge case Length=0).
 		packetBuffer, _ := protocol.EncodeSRTP(filePacket)
 		confirmPacket := false
 
