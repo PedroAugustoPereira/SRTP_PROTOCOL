@@ -1,6 +1,11 @@
 package network
 
-import "net"
+import (
+	"SRTP/internal/protocol"
+	"net"
+	"os"
+	"sync"
+)
 
 type State int
 
@@ -23,4 +28,16 @@ type SRTSession struct {
 type Sender struct {
 	Session *SRTSession
 	File    string
+}
+
+type ClientWorker struct {
+	Session  *SRTSession
+	File     *os.File
+	PacketCh chan *protocol.SRTPPPacket
+}
+
+type Receiver struct {
+	Conn     *net.UDPConn
+	Sessions map[string]*ClientWorker
+	mu       sync.RWMutex
 }

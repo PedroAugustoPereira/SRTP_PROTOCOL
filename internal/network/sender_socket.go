@@ -41,6 +41,10 @@ func (s *Sender) executeHandShake() error {
 		return fmt.Errorf("erro ao ler resposta: %v", err)
 	}
 
+	if !protocol.ValidateCRC(buffer[:length]) {
+		return fmt.Errorf("pacote corrompido (CRC32 inválido), descartando")
+	}
+
 	responsePacket, err := protocol.DecodeSRTP(buffer[:length])
 	if err != nil {
 		return fmt.Errorf("erro ao decodar pacote: %v", err)

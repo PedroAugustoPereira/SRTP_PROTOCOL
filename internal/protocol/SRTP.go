@@ -102,3 +102,22 @@ func CheckHeader(packet *SRTPPPacket) error {
 
 	return nil
 }
+
+func ValidateCRC(buffer []byte) bool {
+	if len(buffer) < 9 {
+		return false
+	}
+
+	originalCRC := uint32(buffer[5])<<24 | uint32(buffer[6])<<16 | uint32(buffer[7])<<8 | uint32(buffer[8])
+	bufferCopy := make([]byte, len(buffer))
+	copy(bufferCopy, buffer)
+
+	bufferCopy[5] = 0
+	bufferCopy[6] = 0
+	bufferCopy[7] = 0
+	bufferCopy[8] = 0
+
+	calculatedCRC := crc32.ChecksumIEEE(bufferCopy)
+
+	return originalCRC == calculatedCRC
+}
