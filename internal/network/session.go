@@ -22,7 +22,11 @@ type SRTSession struct {
 	RemoteAddr  *net.UDPAddr
 	NextSeqNum  uint16
 	ExpectedAck uint16
+	ExpectedSeq uint16
 	WindowSize  uint8
+
+	Controller  FlowController
+	CurrentFile *os.File
 }
 
 type Sender struct {
@@ -31,13 +35,16 @@ type Sender struct {
 }
 
 type ClientWorker struct {
-	Session  *SRTSession
-	File     *os.File
-	PacketCh chan *protocol.SRTPPPacket
+	Session   *SRTSession
+	File      *os.File
+	PacketCh  chan *protocol.SRTPPPacket
+	ClientKey string
+	Server    *Receiver
 }
 
 type Receiver struct {
 	Conn     *net.UDPConn
 	Sessions map[string]*ClientWorker
 	mu       sync.RWMutex
+	Mode     string
 }

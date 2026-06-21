@@ -4,6 +4,8 @@ import (
 	"SRTP/internal/protocol"
 	"fmt"
 	"net"
+	"os"
+	"time"
 )
 
 func (s *Sender) Dial(host string, port int) error {
@@ -67,4 +69,70 @@ func (s *Sender) executeHandShake() error {
 	}
 
 	return fmt.Errorf("handshake falhou: resposta inesperada do servidor")
+}
+
+func (s *Sender) SendFile(filePath string) error {
+	if s.Session.State != StateEstablished {
+		return fmt.Errorf("impossível enviar arquivo: conexão não estabelecida")
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("erro ao abrir o arquivo %s: %v", filePath, err)
+	}
+	defer file.Close()
+
+	s.Session.CurrentFile = file
+
+	fmt.Printf("[SENDER] Iniciando transmissão do arquivo via controlador de fluxo...\n")
+
+	err = s.Session.Controller.TransmitFile(s.Session)
+	if err != nil {
+		return fmt.Errorf("falha durante a transmissão dos dados: %v", err)
+	}
+
+	fmt.Println("[SENDER] Todos os blocos de dados do arquivo foram enviados")
+	return nil
+}
+
+// Close executa o Two-Way Teardown mandando o FIN e esperando o FIN+ACK
+func (s *Sender) Close() error {
+	fmt.Println("[SENDER] Iniciando encerramento de sessão (FIN)...")
+
+	FINPacket := protocol.SRTPPPacket{
+		Header: protocol.SRTPHeader{
+			FIN: true,
+		},
+	}
+	FINBuffer, _ := protocol.EncodeSRTP(&FINPacket)
+	ackBuffer := make([]byte, 9)
+
+	confirmedFIN := false
+	for !confirmedFIN {
+		s.Session.Conn.Write(FINBuffer)
+
+		s.Session.Conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+
+		length, _, err := s.Session.Conn.ReadFromUDP(ackBuffer)
+
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Println("[SENDER] Timeout esperando FIN+ACK... Retransmitindo FIN.")
+				continue
+			}
+			return fmt.Errorf("erro de rede durante o encerramento: %v", err)
+		}
+
+		packetRecv, err := protocol.DecodeSRTP(ackBuffer[:length])
+
+		if err == nil && packetRecv.Header.FIN && packetRecv.Header.ACKFlag {
+			fmt.Println("[SENDER] FIN+ACK recebido com sucesso do servidor!")
+			confirmedFIN = true
+		}
+	}
+
+	s.Session.State = StateClosed
+	s.Session.Conn.Close()
+	fmt.Println("[SENDER] Conexão totalmente fechada. Sessão destruída.")
+	return nil
 }

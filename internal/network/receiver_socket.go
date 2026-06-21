@@ -4,6 +4,7 @@ import (
 	"SRTP/internal/protocol"
 	"fmt"
 	"net"
+	"os"
 )
 
 func (r *Receiver) Listen(port int) error {
@@ -57,7 +58,7 @@ func (r *Receiver) Listen(port int) error {
 				continue
 			}
 
-			worker = r.createNewWorker(remoteAddr, receivedPacket)
+			worker = r.createNewWorker(remoteAddr, receivedPacket, clientKey)
 			r.mu.Lock()
 			r.Sessions[clientKey] = worker
 			r.mu.Unlock()
@@ -75,7 +76,7 @@ func (r *Receiver) Listen(port int) error {
 	}
 }
 
-func (r *Receiver) createNewWorker(addr *net.UDPAddr, syncPacket *protocol.SRTPPPacket) *ClientWorker {
+func (r *Receiver) createNewWorker(addr *net.UDPAddr, syncPacket *protocol.SRTPPPacket, clientKey string) *ClientWorker {
 	senderWindow := syncPacket.Header.Length
 
 	var negotiatedWindow uint8 = 16
@@ -84,20 +85,50 @@ func (r *Receiver) createNewWorker(addr *net.UDPAddr, syncPacket *protocol.SRTPP
 		negotiatedWindow = senderWindow
 	}
 
+	// 1. Criamos a variável da interface
+	var controller FlowController
+
+	// 2. Decidimos qual "cérebro" usar com base na string do modo
+	switch r.Mode {
+	case "saw":
+		controller = &StopAndWaitController{} // Aqui acontece a "Tipagem Patinho" que conversamos!
+	// Futuramente na Parte 2 você vai adicionar:
+	// case "gbn":
+	// 	controller = &GoBackNController{}
+	// case "sr":
+	// 	controller = &SelectiveRepeatController{}
+	default:
+		// Se o usuário digitar um modo inválido, o padrão de fallback é o SAW
+		fmt.Println("[Aviso] Modo desconhecido. Usando 'saw' como padrão.")
+		controller = &StopAndWaitController{}
+	}
+
 	session := &SRTSession{
 		State:      StateClosed,
 		Conn:       r.Conn,
 		RemoteAddr: addr,
 		WindowSize: negotiatedWindow,
+		Controller: controller,
 	}
 
 	return &ClientWorker{
-		Session:  session,
-		PacketCh: make(chan *protocol.SRTPPPacket, 100),
+		Session:   session,
+		PacketCh:  make(chan *protocol.SRTPPPacket, 100),
+		ClientKey: clientKey,
+		Server:    r,
 	}
 }
 
 func (w *ClientWorker) processLoop() {
+	defer func() {
+		w.Server.mu.Lock()
+		delete(w.Server.Sessions, w.ClientKey)
+		w.Server.mu.Unlock()
+
+		w.Session.State = StateClosed
+		fmt.Printf("[SERVER] Sessão de %s totalmente encerrada. Goroutine destruída.\n", w.ClientKey)
+	}()
+
 	SYN_ACK_Packet := protocol.SRTPPPacket{
 		Header: protocol.SRTPHeader{
 			SYN:     true,
@@ -119,13 +150,32 @@ func (w *ClientWorker) processLoop() {
 		case StateSynReceived:
 			if receivedPacket.Header.ACKFlag {
 				w.Session.State = StateEstablished
+
+				clientFolder := fmt.Sprintf("recebidos/%s_%d", w.Session.RemoteAddr.IP.String(), w.Session.RemoteAddr.Port)
+				os.MkdirAll(clientFolder, 0755)
+
 				fmt.Println("Handshake finalizado com " + w.Session.RemoteAddr.String())
 			}
 		case StateEstablished:
-			//err := w.Session.FlowController.HadnlePacket(receivedPacket, w.File, w.Session);
-			// if err != nil {
-			// 	fmt.Println("Erro ao processar pacote pelo controlador de fluxo:", err)
-			// }
+			if receivedPacket.Header.FIN {
+				fmt.Printf("Pacote FIN recebido. Iniciando encerramento... %s\n", w.Session.RemoteAddr.IP.String())
+
+				finAckPacket := protocol.SRTPPPacket{
+					Header: protocol.SRTPHeader{
+						FIN:     true,
+						ACKFlag: true,
+					},
+				}
+				finAckBuffer, _ := protocol.EncodeSRTP(&finAckPacket)
+				w.Session.Conn.WriteToUDP(finAckBuffer, w.Session.RemoteAddr)
+				break
+			}
+
+			err := w.Session.Controller.HandlePacket(receivedPacket, w.Session)
+
+			if err != nil {
+				fmt.Println("Erro ao processar pacote pelo controlador de fluxo:", err)
+			}
 		}
 
 	}

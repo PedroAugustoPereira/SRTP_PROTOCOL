@@ -85,7 +85,7 @@ func DecodeSRTP(buffer []byte) (*SRTPPPacket, error) {
 	packet.Header.CRC32 = uint32(buffer[5])<<24 | uint32(buffer[6])<<16 | uint32(buffer[7])<<8 | uint32(buffer[8])
 
 	if len(buffer) > 9 {
-		packet.Payload = buffer[9 : len(buffer)-1]
+		packet.Payload = buffer[9:]
 	}
 
 	return packet, nil
