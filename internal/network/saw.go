@@ -63,31 +63,37 @@ func (c *StopAndWaitController) TransmitFile(session *SRTSession) error {
 			session.Conn.Write(packetBuffer)
 
 			ACKConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			length, _, err := ACKConn.ReadFromUDP(ACKBuffer)
+			
+			// Fica esperando o ACK correto ou o timeout
+			for {
+				length, _, err := ACKConn.ReadFromUDP(ACKBuffer)
 
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					Logf("[SAW-SENDER] Timeout de 100ms! Retransmitindo SEQ %d...\n", session.NextSeqNum)
-					continue
+				if err != nil {
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						Logf("[SAW-SENDER] Timeout de 100ms! Retransmitindo SEQ %d...\n", session.NextSeqNum)
+						break // Sai do loop interno e reenvia
+					}
+					return fmt.Errorf("erro na rede ao esperar ACK: %v", err)
 				}
-				return fmt.Errorf("erro na rede ao esperar ACK: %v", err)
-			}
 
-			if !protocol.ValidateCRC(ACKBuffer[:length]) {
-				continue
-			}
+				if !protocol.ValidateCRC(ACKBuffer[:length]) {
+					continue // Continua esperando, ignora pacote corrompido
+				}
 
-			ACKPacketRecv, err := protocol.DecodeSRTP(ACKBuffer[:length])
+				ACKPacketRecv, err := protocol.DecodeSRTP(ACKBuffer[:length])
 
-			if err == nil && ACKPacketRecv.Header.ACKFlag {
-				// Confere se o ACK é exatamente para o pacote que enviamos
-				if ACKPacketRecv.Header.ACK == session.NextSeqNum {
-					Logf("[SAW-SENDER] Sucesso: Recebi o ACK %d\n", ACKPacketRecv.Header.ACK)
+				if err == nil && ACKPacketRecv.Header.ACKFlag {
+					// Confere se o ACK é exatamente para o pacote que enviamos
+					if ACKPacketRecv.Header.ACK == session.NextSeqNum {
+						Logf("[SAW-SENDER] Sucesso: Recebi o ACK %d\n", ACKPacketRecv.Header.ACK)
 
-					session.NextSeqNum = (session.NextSeqNum + 1) % 16384
-					confirmPacket = true
-				} else {
-					Logf("[SAW-SENDER] Aviso: Chegou ACK fora de ordem (%d)\n", ACKPacketRecv.Header.ACK)
+						session.NextSeqNum = (session.NextSeqNum + 1) % 16384
+						confirmPacket = true
+						break // Sai do loop interno, vai pro próximo pacote
+					} else {
+						Logf("[SAW-SENDER] Aviso: Chegou ACK fora de ordem (%d)\n", ACKPacketRecv.Header.ACK)
+						// Continua esperando o ACK correto ou dar timeout
+					}
 				}
 			}
 
