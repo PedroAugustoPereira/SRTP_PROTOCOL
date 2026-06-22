@@ -153,52 +153,91 @@ func (w *ClientWorker) processLoop() {
 	//Esperado a ultima mensagem do tree Handshake
 	w.Session.State = StateSynReceived
 
-	for receivedPacket := range w.PacketCh {
-		// Verifica se o pacote é do HandShake
-		switch w.Session.State {
-		case StateSynReceived:
-			if receivedPacket.Header.ACKFlag {
-				w.Session.State = StateEstablished
+	// Timer de inatividade ou encerramento
+	timer := time.NewTimer(5 * time.Second) // Se ficar 5s sem receber nada, morre
+	defer timer.Stop()
 
-				clientFolder := fmt.Sprintf("recebidos/%s_%d", w.Session.RemoteAddr.IP.String(), w.Session.RemoteAddr.Port)
-				os.MkdirAll(clientFolder, 0755)
-				w.Session.ClientFolder = clientFolder
-
-				fmt.Println("Handshake finalizado com " + w.Session.RemoteAddr.String())
-			}
-		case StateEstablished:
-			if receivedPacket.Header.FIN {
-				fmt.Printf("Pacote FIN recebido. Iniciando encerramento... %s\n", w.Session.RemoteAddr.IP.String())
-
-				finAckPacket := protocol.SRTPPPacket{
-					Header: protocol.SRTPHeader{
-						FIN:     true,
-						ACKFlag: true,
-					},
+	for {
+		select {
+		case receivedPacket := <-w.PacketCh:
+			// Reset no timer sempre que receber pacote
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
 				}
-				finAckBuffer, _ := protocol.EncodeSRTP(&finAckPacket)
-				w.Session.Conn.WriteToUDP(finAckBuffer, w.Session.RemoteAddr)
-				return
 			}
+			timer.Reset(5 * time.Second)
 
-			err := w.Session.Controller.HandlePacket(receivedPacket, w.Session)
+			// Verifica se o pacote é do HandShake
+			switch w.Session.State {
+			case StateSynReceived:
+				if receivedPacket.Header.ACKFlag {
+					w.Session.State = StateEstablished
 
-			if err == ErrFlushChannel {
-				fmt.Println("[SERVER] NACK enviado, esvaziando canal de pacotes...")
-				// Drena todos os pacotes pendentes no canal sem matar a goroutine
-				draining := true
-				for draining {
-					select {
-					case <-w.PacketCh:
-					default:
-						draining = false
+					clientFolder := fmt.Sprintf("recebidos/%s_%d", w.Session.RemoteAddr.IP.String(), w.Session.RemoteAddr.Port)
+					os.MkdirAll(clientFolder, 0755)
+					w.Session.ClientFolder = clientFolder
+
+					fmt.Println("Handshake finalizado com " + w.Session.RemoteAddr.String())
+				}
+			case StateEstablished:
+				if receivedPacket.Header.FIN {
+					fmt.Printf("Pacote FIN recebido. Enviando FIN+ACK e entrando em TIME_WAIT... %s\n", w.Session.RemoteAddr.IP.String())
+
+					finAckPacket := protocol.SRTPPPacket{
+						Header: protocol.SRTPHeader{
+							FIN:     true,
+							ACKFlag: true,
+						},
 					}
+					finAckBuffer, _ := protocol.EncodeSRTP(&finAckPacket)
+					w.Session.Conn.WriteToUDP(finAckBuffer, w.Session.RemoteAddr)
+					
+					w.Session.State = StateTimeWait
+					// Reduz o timer para 2 segundos no TimeWait
+					timer.Reset(2 * time.Second)
+					continue
 				}
-			} else if err != nil {
-				fmt.Println("Erro ao processar pacote pelo controlador de fluxo:", err)
-			}
-		}
 
+				err := w.Session.Controller.HandlePacket(receivedPacket, w.Session)
+
+				if err == ErrFlushChannel {
+					fmt.Println("[SERVER] NACK enviado, esvaziando canal de pacotes...")
+					// Drena todos os pacotes pendentes no canal sem matar a goroutine
+					draining := true
+					for draining {
+						select {
+						case <-w.PacketCh:
+						default:
+							draining = false
+						}
+					}
+				} else if err != nil {
+					fmt.Println("Erro ao processar pacote pelo controlador de fluxo:", err)
+				}
+			case StateTimeWait:
+				if receivedPacket.Header.FIN {
+					fmt.Printf("Re-recebido FIN em TIME_WAIT. Re-enviando FIN+ACK... %s\n", w.Session.RemoteAddr.IP.String())
+					finAckPacket := protocol.SRTPPPacket{
+						Header: protocol.SRTPHeader{
+							FIN:     true,
+							ACKFlag: true,
+						},
+					}
+					finAckBuffer, _ := protocol.EncodeSRTP(&finAckPacket)
+					w.Session.Conn.WriteToUDP(finAckBuffer, w.Session.RemoteAddr)
+					timer.Reset(2 * time.Second)
+				}
+			}
+		case <-timer.C:
+			if w.Session.State == StateTimeWait {
+				fmt.Printf("[SERVER] TIME_WAIT de %s concluído. Sessão finalizada.\n", w.ClientKey)
+			} else {
+				fmt.Printf("[SERVER] Timeout de sessão por inatividade. Encerrando %s\n", w.ClientKey)
+			}
+			return
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ const (
 	StateSynSent
 	StateSynReceived
 	StateEstablished
+	StateTimeWait
 )
 
 type SRTSession struct {
