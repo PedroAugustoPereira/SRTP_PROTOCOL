@@ -26,6 +26,10 @@ func (c *StopAndWaitController) HandlePacket(packet *protocol.SRTPPPacket, sessi
 		session.ExpectedSeq = (session.ExpectedSeq + 1) % 16384
 	} else {
 		Logf("[SAW] Aviso: Pacote ignorado. Esperava SEQ %d, chegou SEQ %d\n", session.ExpectedSeq, packet.Header.SEQ)
+		// Re-enviar o ACK do último pacote aceito para destravar o Sender.
+		// Sem isso, se o ACK original for perdido, o Sender fica em loop infinito.
+		ackSeq := (int(session.ExpectedSeq) - 1 + 16384) % 16384
+		SendControlPacket(session, uint16(ackSeq), false)
 	}
 
 	return nil
