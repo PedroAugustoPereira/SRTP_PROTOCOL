@@ -180,6 +180,35 @@ func (w *ClientWorker) processLoop() {
 					w.Session.ClientFolder = clientFolder
 
 					fmt.Println("Handshake finalizado com " + w.Session.RemoteAddr.String())
+				} else if receivedPacket.Header.SYN {
+					fmt.Printf("[SERVER] Re-recebido SYN em StateSynReceived. Re-enviando SYN+ACK para %s\n", w.Session.RemoteAddr.IP.String())
+					w.Session.Conn.WriteToUDP(SYN_ACK_Buffer, w.Session.RemoteAddr)
+				} else {
+					// Se não é SYN nem ACK, é um pacote de dados (SEQ 0).
+					// Isso significa que o Sender recebeu nosso SYN+ACK, mas o ACK final dele se perdeu.
+					// Portanto, consideramos o Handshake concluído!
+					fmt.Printf("[SERVER] Pacote de dados recebido durante handshake. Assumindo ACK implícito de %s!\n", w.Session.RemoteAddr.IP.String())
+					w.Session.State = StateEstablished
+
+					clientFolder := fmt.Sprintf("recebidos/%s_%d", w.Session.RemoteAddr.IP.String(), w.Session.RemoteAddr.Port)
+					os.MkdirAll(clientFolder, 0755)
+					w.Session.ClientFolder = clientFolder
+
+					// Como já mudamos o estado, processamos o pacote de dados agora mesmo
+					err := w.Session.Controller.HandlePacket(receivedPacket, w.Session)
+					if err == ErrFlushChannel {
+						fmt.Println("[SERVER] NACK enviado, esvaziando canal de pacotes...")
+						draining := true
+						for draining {
+							select {
+							case <-w.PacketCh:
+							default:
+								draining = false
+							}
+						}
+					} else if err != nil {
+						fmt.Println("Erro ao processar pacote pelo controlador de fluxo:", err)
+					}
 				}
 			case StateEstablished:
 				if receivedPacket.Header.FIN {
@@ -193,7 +222,7 @@ func (w *ClientWorker) processLoop() {
 					}
 					finAckBuffer, _ := protocol.EncodeSRTP(&finAckPacket)
 					w.Session.Conn.WriteToUDP(finAckBuffer, w.Session.RemoteAddr)
-					
+
 					w.Session.State = StateTimeWait
 					// Reduz o timer para 2 segundos no TimeWait
 					timer.Reset(2 * time.Second)

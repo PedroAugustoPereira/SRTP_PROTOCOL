@@ -77,6 +77,7 @@ func (c *StopAndWaitController) TransmitFile(session *SRTSession) error {
 				}
 
 				if !protocol.ValidateCRC(ACKBuffer[:length]) {
+					Logf("[SAW-SENDER] FALHA DE CRC32! ACK corrompido descartado.\n")
 					continue // Continua esperando, ignora pacote corrompido
 				}
 

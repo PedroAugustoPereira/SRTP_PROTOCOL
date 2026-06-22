@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"fmt"
 	"hash/crc32"
 )
 
@@ -121,5 +122,11 @@ func ValidateCRC(buffer []byte) bool {
 
 	calculatedCRC := crc32.ChecksumIEEE(bufferCopy)
 
-	return originalCRC == calculatedCRC
+	if originalCRC != calculatedCRC {
+		// Imprime sempre para facilitar a captura pro relatório
+		fmt.Printf("\n[PROTOCOL] FALHA DE CRC32! Pacote corrompido descartado.\n")
+		return false
+	}
+
+	return true
 }
