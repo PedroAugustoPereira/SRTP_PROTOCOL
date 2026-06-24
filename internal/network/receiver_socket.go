@@ -89,7 +89,7 @@ func (r *Receiver) Listen(port int) error {
 func (r *Receiver) createNewWorker(addr *net.UDPAddr, syncPacket *protocol.SRTPPPacket, clientKey string) *ClientWorker {
 	senderWindow := syncPacket.Header.Length
 
-	var negotiatedWindow uint8 = 16
+	var negotiatedWindow uint8 = r.WindowSize
 
 	if senderWindow < negotiatedWindow {
 		negotiatedWindow = senderWindow

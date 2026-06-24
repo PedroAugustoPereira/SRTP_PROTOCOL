@@ -36,7 +36,7 @@ func main() {
 	}
 
 	if *listen {
-		executeInteractiveReceiver(*port, *mode)
+		executeInteractiveReceiver(*port, *mode, *window)
 	} else {
 		if *host == "" || *file == "" {
 			fmt.Println("Erro: Modo sender exige --host e --file.")
@@ -97,7 +97,12 @@ func interactiveMenu(port *int, host *string, file *string, mode *string, window
 				fmt.Println("Modo inválido!")
 				continue
 			}
-			executeInteractiveReceiver(recvPort, recvMode)
+			recvWindowStr := askValue("Tamanho da Janela", strconv.Itoa(*window))
+			recvWindow, err := strconv.Atoi(recvWindowStr)
+			if err != nil {
+				recvWindow = 16
+			}
+			executeInteractiveReceiver(recvPort, recvMode, recvWindow)
 
 		case "3":
 			fmt.Println("Encerrando. Até mais!")
@@ -156,12 +161,12 @@ func executeSender(host string, port int, filePath string, mode string, windowSi
 
 // Roda o receiver numa goroutine e monitora o teclado.
 // Se o usuário digitar 'S' + Enter, para o receiver e volta ao menu.
-func executeInteractiveReceiver(port int, mode string) {
+func executeInteractiveReceiver(port int, mode string, windowSize int) {
 	fmt.Printf("\nReceiver escutando na porta %d, modo %s...\n", port, mode)
 	fmt.Println(">>> Digite [S] + Enter a qualquer momento para parar e trocar para Sender <<<")
 	fmt.Println()
 
-	receiver := &network.Receiver{Mode: mode}
+	receiver := &network.Receiver{Mode: mode, WindowSize: uint8(windowSize)}
 
 	// Receiver roda numa goroutine separada
 	done := make(chan error, 1)

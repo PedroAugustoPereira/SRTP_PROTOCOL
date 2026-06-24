@@ -48,9 +48,10 @@ type ClientWorker struct {
 }
 
 type Receiver struct {
-	Conn     *net.UDPConn
-	Sessions map[string]*ClientWorker
-	mu       sync.RWMutex
-	Mode     string
-	Stopped  bool
+	Conn       *net.UDPConn
+	Sessions   map[string]*ClientWorker
+	mu         sync.RWMutex
+	Mode       string
+	WindowSize uint8
+	Stopped    bool
 }
