@@ -160,9 +160,19 @@ func (g *GoBackNController) TransmitFile(session *SRTSession) error {
 					}
 					lastNackSeq = confirmedPacket
 
-					// NACK: Retransmite a partir do pacote pedido
-					ResendInterval(session.Conn, windowBuffer, confirmedPacket, nextSEQNum)
-					timer.Reset(100 * time.Millisecond)
+					// Um NACK para N indica que tudo até N-1 foi recebido com sucesso
+					if distToACK > 0 {
+						lastAcked := (confirmedPacket - 1 + SEQModule) % SEQModule
+						baseSEQ = ClearWindow(windowBuffer, baseSEQ, lastAcked)
+					}
+
+					if baseSEQ == nextSEQNum {
+						timer.Stop()
+					} else {
+						// NACK: Retransmite a partir do pacote pedido
+						ResendInterval(session.Conn, windowBuffer, confirmedPacket, nextSEQNum)
+						timer.Reset(100 * time.Millisecond)
+					}
 				} else {
 					lastNackSeq = 65535 // Reseta a proteção de NACK já que a janela andou
 
