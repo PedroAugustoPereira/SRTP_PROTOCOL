@@ -31,7 +31,7 @@ func (g *GoBackNController) HandlePacket(packet *protocol.SRTPPPacket, session *
 
 		SendControlPacket(session, session.ExpectedSeq, true)
 
-		return ErrFlushChannel
+		return nil
 	}
 
 	return nil
@@ -73,6 +73,8 @@ func (g *GoBackNController) TransmitFile(session *SRTSession) error {
 
 	//Proximo SEQ disponível para novo pacote
 	nextSEQNum := session.NextSeqNum
+
+	var lastNackSeq uint16 = 65535 // inicializa com valor invalido para ignorar NACKs repetidos
 
 	//Tamanho da janela de pacotes que podemos enviar
 	windowSize := uint16(session.WindowSize)
@@ -151,12 +153,19 @@ func (g *GoBackNController) TransmitFile(session *SRTSession) error {
 			distToWindow := (nextSEQNum - baseSEQ + SEQModule) % SEQModule
 
 			// Isso aqui evita que a gente reprocesse Acks antigos se veio um ACK mais novo
-			if distToACK < distToWindow {
+			if distToACK <= distToWindow {
 				if ACKPacket.Header.NACK {
+					if confirmedPacket == lastNackSeq {
+						continue
+					}
+					lastNackSeq = confirmedPacket
+
 					// NACK: Retransmite a partir do pacote pedido
 					ResendInterval(session.Conn, windowBuffer, confirmedPacket, nextSEQNum)
 					timer.Reset(100 * time.Millisecond)
 				} else {
+					lastNackSeq = 65535 // Reseta a proteção de NACK já que a janela andou
+
 					// ACK: Desliza a base da janela
 					baseSEQ = ClearWindow(windowBuffer, baseSEQ, confirmedPacket)
 

@@ -89,6 +89,16 @@ Você pode usar qualquer uma das três formas (`.\srtp.exe`, `go run` ou `make`)
 .\srtp.exe --host 127.0.0.1 --port 6000 --file arquivo_gigante.mp4 --mode sr --verbose=false
 ```
 
+**5. Teste rápido entre Windows (Receiver) e Linux/WSL (Sender) enviando imagem:**
+Terminal 1 (Windows CMD/PowerShell):
+```powershell
+.\srtp.exe --listen --port 6000 --verbose=false --mode gbn
+```
+Terminal 2 (WSL/Linux):
+```bash
+./srtp_linux --host 172.20.0.1 --port 6000 --verbose=false --mode gbn --file ./arquivos_teste_para_enviar/testeimg.png
+```
+
 ## Funcionalidades Adicionais
 - **Ordenação Automática:** Os arquivos recebidos são salvos na pasta raiz (ou com prefixo) de forma legível e perfeitamente ordenável (ex: `file_2026-06-21_17h46m19s.txt`).
 - **Inferência de Tipo MIME:** O Receiver não altera o protocolo SRTP, mas inspeciona automaticamente a assinatura (*magic bytes*) do arquivo recém-recebido para salvar com a extensão correta (`.txt`, `.jpg`, `.pdf`, `.png`, `.zip`). Caso o tipo não seja identificado, salva como `.bin`.
