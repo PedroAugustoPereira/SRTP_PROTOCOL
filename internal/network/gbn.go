@@ -108,11 +108,8 @@ func (g *GoBackNController) TransmitFile(session *SRTSession) error {
 				return err
 			}
 
-			if filePacket.Header.Length == 0 && isEndOfFile {
-				eof = true
-				break
-			}
-
+			// Enviamos também o pacote Length=0 (arquivo múltiplo exato de 255
+			// bytes) como terminador de stream, para o receiver finalizar o arquivo.
 			windowBuffer[nextSEQNum] = filePacket
 			SRTPBuffer, _ := protocol.EncodeSRTP(filePacket)
 			session.Conn.Write(SRTPBuffer)
